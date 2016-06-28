@@ -17,38 +17,61 @@
  * 
  */
 
+// ---------------------------------------------------------------------------------- lifted code
+
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
 
-#define PIN_ENCODER_A      3
-#define PIN_ENCODER_B      5
-#define TRINKET_PINx       PIND
-#define PIN_ENCODER_SWITCH 4
-
-#define RED_PIN 2
-#define GREEN_PIN 13
-#define LED_ON LOW
-#define LED_OFF HIGH
-
-#define OFF_PIN -1
-#define BOIL1_PIN 8
-#define BOIL2_PIN 9
-#define HLT1_PIN 10
-#define HLT2_PIN 11
-#define RIMS_PIN 12
-#define ELEMENT_OFF 1
-#define ELEMENT_ON 0
- 
 static uint8_t enc_prev_pos   = 0;
 static uint8_t enc_flags      = 0;
 static char    sw_was_pressed = 0;
 
 LiquidCrystal_I2C lcd(0x27,20,4);
 
+#define PIN_ENCODER_A      3
+#define PIN_ENCODER_B      5
+#define TRINKET_PINx       PIND
+#define PIN_ENCODER_SWITCH 4
+
+// ---------------------------------------------------------------------------------- declarations
+
+/*
+ * The panel will use a SparkFun RGB rotary encoder for a UI,
+ * and there will be a simple color scheme to provide feedback.
+ * 
+ * -- When all elements are off, it will be steady green.
+ * -- When any elements are on, it will be steady red.
+ * -- When in choosing mode, it will flash between either red or green and yellow
+ *    -- Red vs green depends on if any elements were firing when the
+ *       user went into choosing mode.
+ * -- If choosing mode times out, it will return to the appropriate steady color
+ * -- If a choice is confirmed, it will flash a few times before going steady
+ */
+#define RED_PIN 2
+#define GREEN_PIN 13
+#define LED_ON LOW
+#define LED_OFF HIGH
+
+/*
+ * The ulimate goal here is to choose which 2 out of 5 heating 
+ * elements to run.  This is necessary because we'll be running
+ * a 50 amp circuit with nearly 100 amps worth of elements in 
+ * the system.  This pins will go to a relay board and open 
+ * and close the low voltage line running from the PID to the SSR.
+ */
+#define OFF_PIN -1
+#define BOIL1_PIN 8
+#define BOIL2_PIN 9
+#define HLT1_PIN 10
+#define HLT2_PIN 11
+#define RIMS_PIN 12
+#define ELEMENT_OFF LOW
+#define ELEMENT_ON HIGH
+
 static char element_configuration_labels[7][20];
 static int element_configuration_pins[7][2] = {
   {   OFF_PIN,   OFF_PIN },
-  {   OFF_PIN,  RIMS_PIN },
+  {  RIMS_PIN,   OFF_PIN },
   { BOIL1_PIN, BOIL2_PIN },
   { BOIL1_PIN,  HLT1_PIN },
   { BOIL1_PIN,  RIMS_PIN },
@@ -56,20 +79,27 @@ static int element_configuration_pins[7][2] = {
   {  HLT1_PIN,  HLT2_PIN }
 };
 
+static int element_pins[5] = { BOIL1_PIN, BOIL2_PIN, HLT1_PIN, HLT2_PIN, RIMS_PIN };
+
+/*
+ * These variables will house the state for managing the configuration 
+ */
+ 
+#define UI_MODE_RUNNING 0
+#define UI_MODE_CHOOSING 1
+#define UI_MODE_TIMEOUT 4000
+#define UI_MODE_TOGGLE_TIME 200
+
 static int proposed_element_configuration = 0;
 static int actual_element_configuration = proposed_element_configuration;
 static int last_requested_proposed_configuration = -1;
 static int last_requested_actual_configuration = -1;
-
-static int element_pins[5] = { BOIL1_PIN, BOIL2_PIN, HLT1_PIN, HLT2_PIN, RIMS_PIN };
-
-#define UI_MODE_RUNNING 0
-#define UI_MODE_CHOOSING 1
-
 static int ui_mode = UI_MODE_RUNNING;
 static bool ui_mode_indicator = false;
 static unsigned long ui_last_choosing_mode_started_at = 0;
 static unsigned long ui_last_choosing_indicator_toggled_at = 0;
+
+// ---------------------------------------------------------------------------------- setup
 
 void setup()
 {
@@ -81,7 +111,7 @@ void setup()
 
   // allocate strings for the element mode labels
   strcpy((char*)&element_configuration_labels[0], "  OFF / OFF  ");
-  strcpy((char*)&element_configuration_labels[1], "  OFF / RIMS ");
+  strcpy((char*)&element_configuration_labels[1], " RIMS / OFF  ");
   strcpy((char*)&element_configuration_labels[2], "BOIL1 / BOIL2");
   strcpy((char*)&element_configuration_labels[3], "BOIL1 / HLT1 ");
   strcpy((char*)&element_configuration_labels[4], "BOIL1 / RIMS ");
@@ -109,30 +139,21 @@ void setup()
   }
 
   lcd.init();
+  lcd.clear();
   lcd.backlight();
-  begin_running();
-}
-
-void toggle_choosing_indicator() {
-  ui_last_choosing_indicator_toggled_at = millis();
-  ui_mode_indicator = !ui_mode_indicator;
-  if (ui_mode_indicator) {
-    led_yellow();
-    set_indicator("?");
-  } else {
-    led_running();
-    set_indicator(" ");
-  }
+  begin_running(true);
 }
  
+// ---------------------------------------------------------------------------------- loop
+
 void loop()
 { 
   if (ui_mode == UI_MODE_CHOOSING) {
-    if (millis() - ui_last_choosing_mode_started_at > 4000) {
+    if (millis() - ui_last_choosing_mode_started_at > UI_MODE_TIMEOUT) {
       proposed_element_configuration = actual_element_configuration;
-      begin_running();
+      begin_running(false);
     } else {
-      if (millis() - ui_last_choosing_indicator_toggled_at > 200) {
+      if (millis() - ui_last_choosing_indicator_toggled_at > UI_MODE_TOGGLE_TIME) {
         toggle_choosing_indicator();
       }
     }
@@ -202,8 +223,6 @@ void loop()
   }
  
   enc_prev_pos = enc_cur_pos;
-
-  char output[21];
  
   if (enc_action > 0) {
     if (proposed_element_configuration < 6) {
@@ -224,8 +243,9 @@ void loop()
     {
       delay(5); // debounce delay
       if (ui_mode == UI_MODE_CHOOSING) {
+        bool is_changing = actual_element_configuration != proposed_element_configuration;
         actual_element_configuration = proposed_element_configuration;
-        begin_running();
+        begin_running(is_changing);
         delay(50);
       }
     }
@@ -239,6 +259,19 @@ void loop()
   }
 }
 
+// ---------------------------------------------------------------------------------- support
+
+void toggle_choosing_indicator() {
+  ui_last_choosing_indicator_toggled_at = millis();
+  ui_mode_indicator = !ui_mode_indicator;
+  if (ui_mode_indicator) {
+    led_yellow();
+    set_indicator("?");
+  } else {
+    led_running();
+    set_indicator(" ");
+  }
+}
   
 void sync_proposed_configuration_lcd() {
   if (last_requested_proposed_configuration != proposed_element_configuration) {
@@ -248,18 +281,55 @@ void sync_proposed_configuration_lcd() {
   }
 }
 
+
+void sync_actual_configration_to_relay_board() {
+  all_off();
+  for (int element_offset = 0; element_offset < 2; element_offset++) {
+    fire_relay(element_offset);
+  }
+}
+
+void fire_relay(int element_offset) {
+
+  char pin_label[3];
+  int pin = element_configuration_pins[actual_element_configuration][element_offset];
+  
+  lcd.setCursor(0,element_offset+2);
+  lcd.print("Pin: ");
+  
+  if (pin > 0) {
+    digitalWrite(pin, ELEMENT_ON);
+    sprintf((char*)&pin_label, "%2d", pin);
+    lcd.print(pin_label);
+  } else {
+    lcd.print("None"); 
+  }
+  
+  lcd.print("   ");
+}
+
 void all_off() {
   for (int i = 0; i < 5; i++) {
     digitalWrite(element_pins[i], ELEMENT_OFF);
   }
 }
 
-void begin_running() {
+void begin_running(bool is_changing) {
   ui_mode = UI_MODE_RUNNING;
-  led_running();
   last_requested_proposed_configuration = -1;
   sync_proposed_configuration_lcd();
   set_indicator(" ");
+  sync_actual_configration_to_relay_board();
+  if (is_changing) {
+    bool state = false;
+    for (int i = 0; i < 5; i++) {
+      led_running();
+      delay(50);
+      led_off();
+      delay(50);
+    }
+  }
+  led_running();
 }
 
 void begin_choosing() {
