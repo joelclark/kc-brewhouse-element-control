@@ -1,3 +1,5 @@
+
+
 /*
  * New Forest Brewhouse Control
  * Joel Clark <joel@angrybits.com>
@@ -21,6 +23,7 @@
 
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
+#include <Adafruit_NeoPixel.h>
 
 static uint8_t enc_prev_pos   = 0;
 static uint8_t enc_flags      = 0;
@@ -28,29 +31,26 @@ static char    sw_was_pressed = 0;
 
 LiquidCrystal_I2C lcd(0x27,20,4);
 
-#define PIN_ENCODER_A      3
-#define PIN_ENCODER_B      5
-#define TRINKET_PINx       PIND
-#define PIN_ENCODER_SWITCH 4
+#define PIN_ENCODER_A         3
+#define PIN_ENCODER_B         5
+#define TRINKET_PINx          PIND
+#define PIN_ENCODER_SWITCH    4
+
+#define NEO_PIN               6
+#define NEO_NUMPIXELS         8
+#define NEO_PIXEL_BRIGHTNESS  10
+#define NEO_MAIN_LED_OFFSET   0
+
+Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NEO_NUMPIXELS, NEO_PIN, NEO_GRB + NEO_KHZ800);
+
+uint32_t neo_color_off;
+uint32_t neo_color_red;
+uint32_t neo_color_yellow;
+uint32_t neo_color_green;
+uint32_t neo_color_blue;
 
 // ---------------------------------------------------------------------------------- declarations
 
-/*
- * The panel will use a SparkFun RGB rotary encoder for a UI,
- * and there will be a simple color scheme to provide feedback.
- * 
- * -- When all elements are off, it will be steady green.
- * -- When any elements are on, it will be steady red.
- * -- When in choosing mode, it will flash between either red or green and yellow
- *    -- Red vs green depends on if any elements were firing when the
- *       user went into choosing mode.
- * -- If choosing mode times out, it will return to the appropriate steady color
- * -- If a choice is confirmed, it will flash a few times before going steady
- */
-#define RED_PIN 2
-#define GREEN_PIN 13
-#define LED_ON LOW
-#define LED_OFF HIGH
 
 /*
  * The ulimate goal here is to choose which 2 out of 5 heating 
@@ -108,6 +108,13 @@ void setup()
     pinMode(element_pins[i], OUTPUT);
     digitalWrite(element_pins[i], ELEMENT_OFF);
   }
+  
+  // pre-calculate colors
+  neo_color_off = pixels.Color(0, 0, 0);
+  neo_color_red = pixels.Color(NEO_PIXEL_BRIGHTNESS, 0, 0);
+  neo_color_yellow = pixels.Color(NEO_PIXEL_BRIGHTNESS, NEO_PIXEL_BRIGHTNESS, 0);
+  neo_color_green = pixels.Color(0, NEO_PIXEL_BRIGHTNESS, 0);
+  neo_color_blue = pixels.Color(0, 0, NEO_PIXEL_BRIGHTNESS);
 
   // allocate strings for the element mode labels
   strcpy((char*)&element_configuration_labels[0], "  OFF / OFF  ");
@@ -121,11 +128,6 @@ void setup()
   // ready the rotary encoder pins
   pinMode(PIN_ENCODER_A, INPUT_PULLUP);
   pinMode(PIN_ENCODER_B, INPUT_PULLUP);
-
-  // for the led indicator
-  pinMode(RED_PIN, OUTPUT);
-  pinMode(GREEN_PIN, OUTPUT);
-  led_off();
 
   // ready the encoder push button switch (active high, uses pull-down)
   pinMode(PIN_ENCODER_SWITCH, INPUT);
@@ -141,6 +143,8 @@ void setup()
   lcd.init();
   lcd.clear();
   lcd.backlight();
+  pixels.begin();
+  
   begin_running(true);
 }
  
@@ -265,10 +269,10 @@ void toggle_choosing_indicator() {
   ui_last_choosing_indicator_toggled_at = millis();
   ui_mode_indicator = !ui_mode_indicator;
   if (ui_mode_indicator) {
-    led_yellow();
+    main_led_yellow();
     set_indicator("?");
   } else {
-    led_running();
+    main_led_running();
     set_indicator(" ");
   }
 }
@@ -323,13 +327,13 @@ void begin_running(bool is_changing) {
   if (is_changing) {
     bool state = false;
     for (int i = 0; i < 5; i++) {
-      led_running();
+      main_led_running();
       delay(50);
-      led_off();
+      main_led_off();
       delay(50);
     }
   }
-  led_running();
+  main_led_running();
 }
 
 void begin_choosing() {
@@ -344,31 +348,31 @@ void set_indicator(const char *value) {
   lcd.print(value);
 }
 
-void led_running() {
+void main_led_apply(uint32_t color) {
+  pixels.setPixelColor(NEO_MAIN_LED_OFFSET, color);
+  pixels.show();
+}
+
+void main_led_running() {
   if (actual_element_configuration == 0) {
-    led_green();
+    main_led_green();
   } else {
-    led_red();
+    main_led_red();
   }
 }
 
-void led_red() {
-  digitalWrite(GREEN_PIN, LED_OFF);
-  digitalWrite(RED_PIN, LED_ON);
+void main_led_red() {
+  main_led_apply(neo_color_red);
 }
 
-void led_green() {
-  digitalWrite(GREEN_PIN, LED_ON);
-  digitalWrite(RED_PIN, LED_OFF);
+void main_led_green() {
+  main_led_apply(neo_color_green);
 }
 
-void led_yellow() {
-  digitalWrite(GREEN_PIN, LED_ON);
-  digitalWrite(RED_PIN, LED_ON);
+void main_led_yellow() {
+  main_led_apply(neo_color_yellow);
 }
 
-void led_off() {
-  digitalWrite(GREEN_PIN, LED_OFF);
-  digitalWrite(RED_PIN, LED_OFF);
+void main_led_off() {
+  main_led_apply(neo_color_off);
 }
-
